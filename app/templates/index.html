@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Insurance Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 p-6">
+    <h1 class="text-2xl font-bold mb-4">Insurance Tracker</h1>
+
+    <form class="bg-white p-4 rounded shadow mb-6" action="/add" method="post" enctype="multipart/form-data">
+        <div class="grid grid-cols-2 gap-4">
+            <input type="text" name="name" placeholder="Name" required class="border p-2 rounded">
+            <input type="text" name="phone" placeholder="Phone (+407...)" required class="border p-2 rounded">
+            <input type="text" name="car_name" placeholder="Car Name" required class="border p-2 rounded">
+            <input type="text" name="plate_number" placeholder="Plate (e.g. IS 12 ABC)" required class="border p-2 rounded">
+            <input type="text" name="vin_number" placeholder="VIN Number" required class="border p-2 rounded">
+            <input type="date" name="insurance_start" required class="border p-2 rounded">
+            <input type="date" name="insurance_end" required class="border p-2 rounded">
+            <input type="file" name="pdf" accept="application/pdf" class="border p-2 rounded">
+        </div>
+        <button class="mt-4 bg-blue-600 text-white px-4 py-2 rounded">Add Insurance</button>
+    </form>
+
+    <table class="w-full bg-white rounded shadow">
+        <thead class="bg-blue-100">
+            <tr>
+                <th class="p-2">Name</th>
+                <th class="p-2">Car</th>
+                <th class="p-2">Plate</th>
+                <th class="p-2">VIN</th>
+                <th class="p-2">Start</th>
+                <th class="p-2">End</th>
+                <th class="p-2">Days Left</th>
+                <th class="p-2">PDF</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in records %}
+            {% set days_left = (r.insurance_end - today).days %}
+            <tr class="text-center {% if days_left < 7 %}bg-red-100{% endif %}">
+                <td class="p-2">{{ r.name }}</td>
+                <td class="p-2">{{ r.car_name }}</td>
+                <td class="p-2">{{ r.plate_number }}</td>
+                <td class="p-2">{{ r.vin_number }}</td>
+                <td class="p-2">{{ r.insurance_start }}</td>
+                <td class="p-2">{{ r.insurance_end }}</td>
+                <td class="p-2">{{ days_left }}</td>
+                <td class="p-2">
+                    {% if r.pdf_path %}
+                        <a href="/download/{{ r.id }}" class="text-blue-600 underline">Download</a>
+                    {% else %}—{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>
