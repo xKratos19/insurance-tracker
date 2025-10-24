@@ -1,0 +1,15 @@
+# Environment files
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Build artifacts
+*.log
+*.db
+*.sqlite3
+
+# Docker
+data/
+mongo_data/
