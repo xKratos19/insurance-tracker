@@ -26,21 +26,29 @@
     <a href="/export_csv" class="bg-green-600 text-white px-4 py-2 rounded">Download All CSV</a>
     <button id="exportSelected" class="bg-yellow-600 text-white px-4 py-2 rounded">Export Selected</button>
   </div>
+  
+  <div class="flex justify-end mb-4">
+    <a href="/audit" class="bg-gray-700 hover:bg-gray-800 text-white py-2 px-4 rounded">
+        View Audit Log
+    </a>
+  </div>
 
   <form id="selectedForm" method="post" action="/export_selected_csv">
     <input type="hidden" id="selected_ids" name="selected_ids">
-    <table class="w-full bg-white rounded shadow">
+    <table class="w-full bg-white rounded shadow text-center">
       <thead class="bg-blue-100">
         <tr>
           <th class="p-2"><input type="checkbox" id="selectAll"></th>
           <th class="p-2">Name</th>
           <th class="p-2">Car</th>
+          <th class="p-2">Phone</th>
           <th class="p-2">Plate</th>
           <th class="p-2">VIN</th>
           <th class="p-2">Start</th>
           <th class="p-2">End</th>
           <th class="p-2">Days Left</th>
-          <th class="p-2">PDF</th>
+          <th class="p-2">Actions</th>
+
         </tr>
       </thead>
       <tbody>
@@ -49,16 +57,51 @@
           <td class="p-2"><input type="checkbox" class="selectRow" value="{{ r.id }}"></td>
           <td class="p-2">{{ r.name }}</td>
           <td class="p-2">{{ r.car_name }}</td>
+          <td class="p-2 text-center">
+            {% if r.phone %}
+                <a href="https://wa.me/{{ r.phone | replace('+', '') }}"
+                target="_blank"
+                class="inline-flex items-center justify-center text-green-600 hover:text-green-700 space-x-1">
+                <span>{{ r.phone }}</span>
+                </a>
+            {% else %}
+                —
+            {% endif %}
+          </td>
           <td class="p-2">{{ r.plate_number }}</td>
           <td class="p-2">{{ r.vin_number }}</td>
           <td class="p-2">{{ r.insurance_start }}</td>
           <td class="p-2">{{ r.insurance_end }}</td>
           <td class="p-2">{{ r.days_left if r.days_left is not none else '—' }}</td>
           <td class="p-2">
-            {% if r.pdf_id %}
-              <a href="/download/{{ r.id }}" class="text-blue-600 underline">Download</a>
-            {% else %}—{% endif %}
+            <div class="flex justify-center space-x-3">
+                
+                {% if r.pdf_id %}
+                <a href="/download/{{ r.id }}" 
+                    class="text-blue-600 hover:underline">
+                    Download
+                </a>
+                {% else %}
+                <span class="text-gray-400">—</span>
+                {% endif %}
+
+                <a href="/edit/{{ r.id }}" 
+                class="text-indigo-600 hover:text-indigo-800 font-semibold">
+                Edit
+                </a>
+
+                <form action="/delete/{{ r.id }}" method="post"
+                    onsubmit="return confirm('Are you sure you want to delete this record?');"
+                    class="inline">
+                <button type="submit"
+                        class="text-red-600 hover:text-red-800 font-semibold">
+                    Delete
+                </button>
+                </form>
+
+            </div>
           </td>
+
         </tr>
         {% endfor %}
       </tbody>

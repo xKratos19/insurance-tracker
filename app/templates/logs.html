@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Audit Logs</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 p-6">
+  <h1 class="text-2xl font-bold mb-4">Audit Logs</h1>
+  <a href="/" class="text-blue-600 underline mb-4 inline-block">← Back to Dashboard</a>
+
+  <table class="w-full bg-white rounded shadow">
+    <thead class="bg-gray-200">
+      <tr>
+        <th class="p-2 text-left">Time (UTC)</th>
+        <th class="p-2 text-left">Action</th>
+        <th class="p-2 text-left">Record ID</th>
+        <th class="p-2 text-left">Changes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for log in logs %}
+      <tr class="border-b">
+        <td class="p-2">{{ log.time }}</td>
+        <td class="p-2 font-semibold">{{ log.action }}</td>
+        <td class="p-2">{{ log.record_id }}</td>
+        <td class="p-2 text-sm">{{ log.changes }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

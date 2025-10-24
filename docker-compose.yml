@@ -5,9 +5,9 @@ services:
       - "8090:8080"
     environment:
       - MONGO_URI=${MONGO_URI}
-      - EMAIL=${EMAIL}
-      - APP_PASSWORD=${APP_PASSWORD}
-      - TO_EMAIL=${TO_EMAIL}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+      - ALERT_SENDER_EMAIL=${ALERT_SENDER_EMAIL}
+      - ALERT_RECEIVER_EMAIL=${ALERT_RECEIVER_EMAIL}
     depends_on:
       - mongo
     restart: unless-stopped

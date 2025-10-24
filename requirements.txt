@@ -5,3 +5,5 @@ motor
 python-multipart
 apscheduler
 python-dotenv
+pytz
+sendgrid==6.11.0

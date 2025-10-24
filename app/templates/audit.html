@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audit Log</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans leading-normal tracking-normal">
+  <div class="max-w-6xl mx-auto mt-8 p-6 bg-white rounded-lg shadow">
+    <div class="flex justify-between items-center mb-4">
+      <h1 class="text-2xl font-bold text-gray-700">Audit Log</h1>
+      <a href="/" class="text-blue-600 hover:underline">← Back to Dashboard</a>
+    </div>
+
+    {% if logs %}
+    <table class="w-full border border-gray-200 rounded-md shadow-sm">
+      <thead class="bg-blue-100">
+        <tr class="text-left">
+          <th class="p-2">Action</th>
+          <th class="p-2">Record ID</th>
+          <th class="p-2">Timestamp</th>
+          <th class="p-2">Changes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+        <tr class="border-t text-center">
+          <td class="p-2 font-semibold {% if log.action == 'Create' %}text-green-600{% elif log.action == 'Update' %}text-yellow-600{% else %}text-red-600{% endif %}">
+            {{ log.action }}
+          </td>
+          <td class="p-2">
+            <code class="text-sm bg-gray-100 px-2 py-1 rounded">{{ log.record_id }}</code>
+          </td>
+          <td class="p-2 text-gray-700">{{ log.timestamp }}</td>
+          <td class="p-2 text-gray-600">{{ log.changes }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-gray-500 text-center mt-4">No audit logs found.</p>
+    {% endif %}
+  </div>
+</body>
+</html>

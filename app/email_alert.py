@@ -1,28 +1,60 @@
+# app/email_alert.py
 import os
-import smtplib
-from email.mime.text import MIMEText
-from dotenv import load_dotenv
+from datetime import datetime
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 
-load_dotenv()
-EMAIL = os.getenv("EMAIL")
-APP_PASSWORD = os.getenv("APP_PASSWORD")
-TO_EMAIL = os.getenv("TO_EMAIL")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+SENDER = os.getenv("ALERT_SENDER_EMAIL")
+RECEIVER = os.getenv("ALERT_RECEIVER_EMAIL")
 
 def send_email_alert(items):
-    if not (EMAIL and APP_PASSWORD and TO_EMAIL):
-        return  # silently skip if not configured
+    """Send an insurance expiration alert using SendGrid"""
+    if not SENDGRID_API_KEY:
+        print("⚠️ Missing SENDGRID_API_KEY — cannot send email.")
+        return
 
-    lines = ["⚠️ The following insurances expire within 7 days:\n"]
-    for it in items:
-        lines.append(
-            f"- {it.get('name')} ({it.get('car_name')}, {it.get('plate_number')}) "
-            f"expires on {it.get('insurance_end').date() if it.get('insurance_end') else 'N/A'}"
+    try:
+        subject = "🚨 Insurance Expiration Alert - 7 Days Remaining"
+        html_body = """
+        <h2 style="color:#d9534f;">Upcoming Insurance Expirations</h2>
+        <p>The following insurance policies will expire within 7 days:</p>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
+            <tr style="background:#f2f2f2;">
+                <th>Name</th><th>Car</th><th>Plate</th><th>End Date</th><th>Days Left</th>
+            </tr>
+        """
+        today = datetime.utcnow().date()
+        for item in items:
+            name = item.get("name", "—")
+            car = item.get("car_name", "—")
+            plate = item.get("plate_number", "—")
+            end = item.get("insurance_end")
+            if hasattr(end, "date"):
+                end = end.date()
+            days_left = (end - today).days if end else "?"
+            html_body += f"""
+                <tr>
+                    <td>{name}</td>
+                    <td>{car}</td>
+                    <td>{plate}</td>
+                    <td>{end}</td>
+                    <td>{days_left}</td>
+                </tr>
+            """
+        html_body += "</table><p>—<br><em>Automated Insurance Tracker</em></p>"
+
+        message = Mail(
+            from_email=SENDER,
+            to_emails=RECEIVER,
+            subject=subject,
+            html_content=html_body
         )
-    msg = MIMEText("\n".join(lines))
-    msg["Subject"] = "Insurance Expiry Reminder"
-    msg["From"] = EMAIL
-    msg["To"] = TO_EMAIL
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
-        s.login(EMAIL, APP_PASSWORD)
-        s.send_message(msg)
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
+
+        print(f"✅ Alert email sent via SendGrid: {response.status_code}")
+
+    except Exception as e:
+        print("❌ Failed to send SendGrid email:", e)

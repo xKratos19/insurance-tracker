@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Edit Record</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 flex justify-center py-10">
+  <form action="/update/{{ record.id }}" method="post" enctype="multipart/form-data"
+        class="bg-white p-8 rounded shadow-md w-full max-w-lg space-y-4">
+    <h2 class="text-2xl font-bold text-center mb-4">Edit Record</h2>
+
+    <label class="block">
+      <span class="font-semibold">Name:</span>
+      <input type="text" name="name" value="{{ record.name }}" required class="w-full border p-2 rounded">
+    </label>
+
+    <label class="block">
+      <span class="font-semibold">Phone:</span>
+      <input type="text" name="phone" value="{{ record.phone }}" required class="w-full border p-2 rounded">
+    </label>
+
+    <label class="block">
+      <span class="font-semibold">Car Name:</span>
+      <input type="text" name="car_name" value="{{ record.car_name }}" required class="w-full border p-2 rounded">
+    </label>
+
+    <label class="block">
+      <span class="font-semibold">Plate Number:</span>
+      <input type="text" name="plate_number" value="{{ record.plate_number }}" required class="w-full border p-2 rounded">
+    </label>
+
+    <label class="block">
+      <span class="font-semibold">VIN Number:</span>
+      <input type="text" name="vin_number" value="{{ record.vin_number }}" required class="w-full border p-2 rounded">
+    </label>
+
+    <label class="block">
+      <span class="font-semibold">Insurance Start:</span>
+      <input type="date" name="insurance_start" value="{{ record.insurance_start }}" required class="w-full border p-2 rounded">
+    </label>
+
+    <label class="block">
+      <span class="font-semibold">Insurance End:</span>
+      <input type="date" name="insurance_end" value="{{ record.insurance_end }}" required class="w-full border p-2 rounded">
+    </label>
+
+    <label class="block">
+      <span class="font-semibold">Replace PDF (optional):</span>
+      <input type="file" name="pdf" accept="application/pdf" class="w-full border p-2 rounded">
+    </label>
+
+    <div class="flex justify-between mt-4">
+      <a href="/" class="text-gray-600 underline">Cancel</a>
+      <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Save Changes</button>
+    </div>
+  </form>
+</body>
+</html>
