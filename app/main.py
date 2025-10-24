@@ -18,10 +18,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 @app.on_event("startup")
 async def startup_event():
-    from pymongo.database import Database as SyncDB
-    fs_client = db.client.get_database(db.name)
-    sync_db = fs_client._Database__delegate
-    app.state.fs_bucket = GridFSBucket(sync_db)
+    app.state.fs_bucket = GridFSBucket(db.delegate)  # <-- FIX HERE
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_expiring_insurances, "cron", hour=9)
