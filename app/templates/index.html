@@ -100,9 +100,17 @@
                 </form>
 
             </div>
+
+
           </td>
 
         </tr>
+
+          <div class="p-4 bg-blue-50 rounded mb-4">
+            <label class="block font-semibold mb-2">Import from PDF (Policy or Offer)</label>
+            <input type="file" id="pdfImport" accept="application/pdf" class="border rounded p-2 w-full">
+            <p id="importStatus" class="text-sm text-gray-600 mt-2"></p>
+          </div>
         {% endfor %}
       </tbody>
     </table>
@@ -124,6 +132,41 @@
       document.getElementById('selected_ids').value = selected.join(",");
       document.getElementById('selectedForm').submit();
     });
+    document.getElementById('pdfImport').addEventListener('change', async function (event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const status = document.getElementById('importStatus');
+    status.textContent = "Uploading and parsing PDF...";
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+      try {
+          const res = await fetch("/import_pdf", { method: "POST", body: formData });
+          const data = await res.json();
+
+          if (data.success) {
+              const f = data.parsed_data;
+              document.querySelector('[name="name"]').value = f.name || "";
+              document.querySelector('[name="phone"]').value = f.phone || "";
+              document.querySelector('[name="car_name"]').value = `${f.car_make || ""} ${f.car_model || ""}`.trim();
+              document.querySelector('[name="plate_number"]').value = f.plate_number || "";
+              document.querySelector('[name="vin_number"]').value = f.vin_number || "";
+              document.querySelector('[name="insurance_start"]').value = f.insurance_start || "";
+              document.querySelector('[name="insurance_end"]').value = f.insurance_end || "";
+
+              status.textContent = `✅ Imported successfully from ${data.filename}`;
+              status.classList.remove("text-red-600");
+              status.classList.add("text-green-600");
+          } else {
+              throw new Error(data.detail || "Could not extract data");
+          }
+      } catch (e) {
+          status.textContent = "❌ Failed to import: " + e.message;
+          status.classList.remove("text-green-600");
+          status.classList.add("text-red-600");
+      }
+  });
   </script>
 </body>
 </html>

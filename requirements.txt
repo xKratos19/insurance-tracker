@@ -7,3 +7,4 @@ apscheduler
 python-dotenv
 pytz
 sendgrid==6.11.0
+PyMuPDF==1.24.2
