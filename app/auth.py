@@ -168,6 +168,12 @@ async def auth_callback(request: Request):
     try:
         token = await oauth.google.authorize_access_token(request)
     except OAuthError as exc:
+        # Transparent recovery: a stale/missing state token usually means the user
+        # retried the flow (e.g. after a 500). Clearing the session and bouncing back
+        # to /login restarts authorise cleanly instead of dead-ending on an error page.
+        if exc.error in {"mismatching_state", "csrf_warning", "missing_state"}:
+            request.session.clear()
+            return RedirectResponse(url="/login", status_code=303)
         return RedirectResponse(url=f"/auth/error?reason={exc.error}", status_code=303)
 
     userinfo = token.get("userinfo") or {}
