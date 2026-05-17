@@ -1,0 +1,70 @@
+name: Deploy (self-hosted Proxmox)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: insurance-tracker-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    timeout-minutes: 20
+
+    env:
+      PROJECT_DIR: /opt/insurance-tracker
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure project directory exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo mkdir -p "${PROJECT_DIR}"
+          sudo chown -R "$(id -u):$(id -g)" "${PROJECT_DIR}"
+
+      - name: Sync workspace into project directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          rsync -a --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.env' \
+            --exclude='mongo_data/' \
+            --exclude='data/' \
+            "${GITHUB_WORKSPACE}/" "${PROJECT_DIR}/"
+
+      - name: Preserve existing .env (do not overwrite secrets)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "${PROJECT_DIR}/.env" ]; then
+            echo "::warning::No .env present at ${PROJECT_DIR}/.env — create one on the host before first deploy."
+          fi
+
+      - name: Build and start containers
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          docker compose pull || true
+          docker compose up -d --build --remove-orphans
+
+      - name: Prune dangling images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker image prune -f
+
+      - name: Verify containers are running
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          docker compose ps

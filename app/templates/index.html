@@ -2,34 +2,73 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Insurance Tracker (MongoDB)</title>
-  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <title>Insurance Tracker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 p-6">
-  <h1 class="text-2xl font-bold mb-4">Insurance Tracker</h1>
+  <div class="flex justify-between items-center mb-4">
+    <h1 class="text-2xl font-bold">Insurance Tracker</h1>
+    {% if user %}
+    <div class="flex items-center gap-3 text-sm text-gray-700">
+      {% if user.picture %}<img src="{{ user.picture }}" class="w-8 h-8 rounded-full" alt="">{% endif %}
+      <span class="font-medium">{{ user.email }}</span>
+      <a href="/logout" class="text-blue-600 hover:underline">Sign out</a>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="p-4 bg-blue-50 rounded mb-6">
+    <label class="block font-semibold mb-2">Import from PDF (Policy)</label>
+    <input type="file" id="pdfImport" accept="application/pdf" class="border rounded p-2 w-full">
+    <p id="importStatus" class="text-sm text-gray-600 mt-2"></p>
+  </div>
 
   <form class="bg-white p-4 rounded shadow mb-6" action="/add" method="post" enctype="multipart/form-data">
     <div class="grid grid-cols-2 gap-4">
-      <input type="text" name="name" placeholder="Name" required class="border p-2 rounded">
+      <input type="text" name="name" placeholder="Full Name (Last First)" required class="border p-2 rounded">
       <input type="text" name="phone" placeholder="Phone (+407...)" required class="border p-2 rounded">
+      <input type="text" name="first_name" placeholder="First Name" class="border p-2 rounded">
+      <input type="text" name="last_name" placeholder="Last Name" class="border p-2 rounded">
       <input type="text" name="car_name" placeholder="Car Name" required class="border p-2 rounded">
       <input type="text" name="plate_number" placeholder="Plate (e.g. IS 12 ABC)" required class="border p-2 rounded">
       <input type="text" name="vin_number" placeholder="VIN Number" required class="border p-2 rounded">
+      <div></div>
       <input type="date" name="insurance_start" required class="border p-2 rounded">
       <input type="date" name="insurance_end" required class="border p-2 rounded">
-      <input type="file" name="pdf" accept="application/pdf" class="border p-2 rounded">
     </div>
-    <button class="mt-4 bg-blue-600 text-white px-4 py-2 rounded">Add Insurance</button>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+      <label class="block">
+        <span class="text-sm font-semibold text-gray-700">Insurance Policy (PDF)</span>
+        <input type="file" name="policy_file" accept="application/pdf" class="border p-2 rounded w-full mt-1">
+      </label>
+      <label class="block">
+        <span class="text-sm font-semibold text-gray-700">Car Documents (Talon — PDF / JPG / PNG)</span>
+        <input type="file" name="car_documents" multiple
+               accept="application/pdf,image/jpeg,image/png,image/webp"
+               class="border p-2 rounded w-full mt-1">
+      </label>
+      <label class="block">
+        <span class="text-sm font-semibold text-gray-700">Person Documents (CI — PDF / JPG / PNG)</span>
+        <input type="file" name="person_documents" multiple
+               accept="application/pdf,image/jpeg,image/png,image/webp"
+               class="border p-2 rounded w-full mt-1">
+      </label>
+    </div>
+
+    <button class="mt-4 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Add Insurance</button>
   </form>
 
   <div class="mb-4 flex gap-2">
     <a href="/export_csv" class="bg-green-600 text-white px-4 py-2 rounded">Download All CSV</a>
     <button id="exportSelected" class="bg-yellow-600 text-white px-4 py-2 rounded">Export Selected</button>
+    <a href="/admin/test-email" class="bg-purple-600 text-white px-4 py-2 rounded"
+       onclick="return confirm('Send a test alert email now?');">Send Test Email</a>
   </div>
-  
+
   <div class="flex justify-end mb-4">
     <a href="/audit" class="bg-gray-700 hover:bg-gray-800 text-white py-2 px-4 rounded">
-        View Audit Log
+      View Audit Log
     </a>
   </div>
 
@@ -47,8 +86,8 @@
           <th class="p-2">Start</th>
           <th class="p-2">End</th>
           <th class="p-2">Days Left</th>
+          <th class="p-2">Files</th>
           <th class="p-2">Actions</th>
-
         </tr>
       </thead>
       <tbody>
@@ -59,13 +98,13 @@
           <td class="p-2">{{ r.car_name }}</td>
           <td class="p-2 text-center">
             {% if r.phone %}
-                <a href="https://wa.me/{{ r.phone | replace('+', '') }}"
-                target="_blank"
-                class="inline-flex items-center justify-center text-green-600 hover:text-green-700 space-x-1">
+              <a href="https://wa.me/{{ r.phone | replace('+', '') }}"
+                 target="_blank"
+                 class="inline-flex items-center justify-center text-green-600 hover:text-green-700 space-x-1">
                 <span>{{ r.phone }}</span>
-                </a>
+              </a>
             {% else %}
-                —
+              —
             {% endif %}
           </td>
           <td class="p-2">{{ r.plate_number }}</td>
@@ -73,44 +112,31 @@
           <td class="p-2">{{ r.insurance_start }}</td>
           <td class="p-2">{{ r.insurance_end }}</td>
           <td class="p-2">{{ r.days_left if r.days_left is not none else '—' }}</td>
+          <td class="p-2 text-left text-xs">
+            {% for d in r.documents %}
+              <a href="/download_file/{{ d.file_id }}" class="block text-blue-600 hover:underline">📄 {{ d.filename }}</a>
+            {% endfor %}
+            {% for d in r.car_docs_ids %}
+              <a href="/download_file/{{ d.file_id }}" class="block text-teal-600 hover:underline">🚗 {{ d.filename }}</a>
+            {% endfor %}
+            {% for d in r.person_docs_ids %}
+              <a href="/download_file/{{ d.file_id }}" class="block text-amber-600 hover:underline">🪪 {{ d.filename }}</a>
+            {% endfor %}
+            {% if not r.documents and not r.car_docs_ids and not r.person_docs_ids %}
+              <span class="text-gray-400">—</span>
+            {% endif %}
+          </td>
           <td class="p-2">
             <div class="flex justify-center space-x-3">
-                
-                {% if r.pdf_id %}
-                <a href="/download/{{ r.id }}" 
-                    class="text-blue-600 hover:underline">
-                    Download
-                </a>
-                {% else %}
-                <span class="text-gray-400">—</span>
-                {% endif %}
-
-                <a href="/edit/{{ r.id }}" 
-                class="text-indigo-600 hover:text-indigo-800 font-semibold">
-                Edit
-                </a>
-
-                <form action="/delete/{{ r.id }}" method="post"
+              <a href="/edit/{{ r.id }}" class="text-indigo-600 hover:text-indigo-800 font-semibold">Edit</a>
+              <form action="/delete/{{ r.id }}" method="post"
                     onsubmit="return confirm('Are you sure you want to delete this record?');"
                     class="inline">
-                <button type="submit"
-                        class="text-red-600 hover:text-red-800 font-semibold">
-                    Delete
-                </button>
-                </form>
-
+                <button type="submit" class="text-red-600 hover:text-red-800 font-semibold">Delete</button>
+              </form>
             </div>
-
-
           </td>
-
         </tr>
-
-          <div class="p-4 bg-blue-50 rounded mb-4">
-            <label class="block font-semibold mb-2">Import from PDF (Policy or Offer)</label>
-            <input type="file" id="pdfImport" accept="application/pdf" class="border rounded p-2 w-full">
-            <p id="importStatus" class="text-sm text-gray-600 mt-2"></p>
-          </div>
         {% endfor %}
       </tbody>
     </table>
@@ -132,41 +158,42 @@
       document.getElementById('selected_ids').value = selected.join(",");
       document.getElementById('selectedForm').submit();
     });
-    document.getElementById('pdfImport').addEventListener('change', async function (event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    const status = document.getElementById('importStatus');
-    status.textContent = "Uploading and parsing PDF...";
 
-    const formData = new FormData();
-    formData.append("file", file);
+    document.getElementById('pdfImport').addEventListener('change', async function (event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const status = document.getElementById('importStatus');
+      status.textContent = "Uploading and parsing PDF...";
+
+      const formData = new FormData();
+      formData.append("file", file);
 
       try {
-          const res = await fetch("/import_pdf", { method: "POST", body: formData });
-          const data = await res.json();
+        const res = await fetch("/import_pdf", { method: "POST", body: formData });
+        const data = await res.json();
 
-          if (data.success) {
-              const f = data.parsed_data;
-              document.querySelector('[name="name"]').value = f.name || "";
-              document.querySelector('[name="phone"]').value = f.phone || "";
-              document.querySelector('[name="car_name"]').value = `${f.car_make || ""} ${f.car_model || ""}`.trim();
-              document.querySelector('[name="plate_number"]').value = f.plate_number || "";
-              document.querySelector('[name="vin_number"]').value = f.vin_number || "";
-              document.querySelector('[name="insurance_start"]').value = f.insurance_start || "";
-              document.querySelector('[name="insurance_end"]').value = f.insurance_end || "";
+        if (data.success) {
+          const f = data.parsed_data || {};
+          document.querySelector('[name="name"]').value = f.name || "";
+          document.querySelector('[name="first_name"]').value = f.first_name || "";
+          document.querySelector('[name="last_name"]').value = f.last_name || "";
+          document.querySelector('[name="plate_number"]').value = f.plate_number || "";
+          document.querySelector('[name="vin_number"]').value = f.vin_number || "";
+          document.querySelector('[name="insurance_start"]').value = f.insurance_start || "";
+          document.querySelector('[name="insurance_end"]').value = f.insurance_end || "";
 
-              status.textContent = `✅ Imported successfully from ${data.filename}`;
-              status.classList.remove("text-red-600");
-              status.classList.add("text-green-600");
-          } else {
-              throw new Error(data.detail || "Could not extract data");
-          }
+          status.textContent = `✅ Imported from ${data.filename}` + (f.issuer ? ` (${f.issuer})` : "");
+          status.classList.remove("text-red-600");
+          status.classList.add("text-green-600");
+        } else {
+          throw new Error(data.detail || "Could not extract data");
+        }
       } catch (e) {
-          status.textContent = "❌ Failed to import: " + e.message;
-          status.classList.remove("text-green-600");
-          status.classList.add("text-red-600");
+        status.textContent = "❌ Failed to import: " + e.message;
+        status.classList.remove("text-green-600");
+        status.classList.add("text-red-600");
       }
-  });
+    });
   </script>
 </body>
 </html>

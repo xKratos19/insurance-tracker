@@ -1,45 +1,97 @@
-from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 from bson import ObjectId
-from gridfs import GridFSBucket
+from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 from io import BytesIO, StringIO
-import csv, traceback, re, fitz
+import csv
 
+from .auth import install_auth, require_user
 from .database import db, records_col
 from .email_alert import send_email_alert
+from .file_utils import (
+    ALLOWED_DOC_MIMES,
+    ALLOWED_POLICY_MIMES,
+    CAR_DOCS_LABEL,
+    PERSON_DOCS_LABEL,
+    POLICY_LABEL,
+    build_filename,
+    pick_extension,
+    validate_mime,
+)
+from .pdf_extract import extract_insurance_data
 from .validators import validate_phone, validate_plate, validate_vin
+
 
 app = FastAPI()
 templates = Jinja2Templates(directory="app/templates")
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+install_auth(app)
 
 
 # ========== STARTUP ==========
 @app.on_event("startup")
 async def startup_event():
-    app.state.fs_bucket = GridFSBucket(db.delegate)
+    app.state.fs_bucket = AsyncIOMotorGridFSBucket(db)
 
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_expiring_insurances, "cron", hour=7, timezone="Europe/Bucharest")
+    scheduler.add_job(
+        check_expiring_insurances, "cron", hour=7, timezone="Europe/Bucharest"
+    )
     scheduler.start()
+    app.state.scheduler = scheduler
 
 
 # ========== CRON JOB ==========
-async def check_expiring_insurances():
-    upcoming = datetime.utcnow() + timedelta(days=7)
+async def _collect_expiring_items(days_ahead: int = 7) -> list[dict]:
+    """Shape data the same way `home` does so `send_email_alert` sees the same keys
+    whether it's invoked by the scheduler or the `/admin/test-email` route."""
+    today = datetime.utcnow().date()
+    upcoming = datetime.utcnow() + timedelta(days=days_ahead)
     cursor = records_col.find({"insurances.insurance_end": {"$lte": upcoming}})
-    items = await cursor.to_list(length=None)
+    rows = await cursor.to_list(length=None)
+
+    out: list[dict] = []
+    for d in rows:
+        latest = (d.get("insurances") or [{}])[-1]
+        end = latest.get("insurance_end")
+        end_date = end.date() if hasattr(end, "date") else end
+        if not end_date or end_date < today - timedelta(days=1):
+            continue
+        days_left = (end_date - today).days
+        if days_left > days_ahead:
+            continue
+        out.append(
+            {
+                "name": d.get("name", ""),
+                "car_name": d.get("car_name", ""),
+                "plate_number": d.get("plate_number", ""),
+                "insurance_end": end_date,
+                "days_left": days_left,
+            }
+        )
+    return out
+
+
+async def check_expiring_insurances():
+    items = await _collect_expiring_items()
     if items:
         send_email_alert(items)
 
 
-# ========== ROUTES ==========
+# ========== HEALTH ==========
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
 
+
+# ========== ROUTES ==========
 @app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
+async def home(request: Request, user: dict = Depends(require_user)):
     cursor = records_col.find().sort("created_at", -1)
     data = await cursor.to_list(length=None)
     items = []
@@ -47,27 +99,93 @@ async def home(request: Request):
     for d in data:
         latest_ins = d.get("insurances", [{}])[-1] if d.get("insurances") else {}
         end = latest_ins.get("insurance_end")
-        days_left = (end.date() - datetime.utcnow().date()).days if end else None
+        days_left = (
+            (end.date() - datetime.utcnow().date()).days if end else None
+        )
 
-        items.append({
-            "id": str(d["_id"]),
-            "name": d.get("name"),
-            "phone": d.get("phone"),
-            "car_name": d.get("car_name"),
-            "plate_number": d.get("plate_number"),
-            "vin_number": d.get("vin_number"),
-            "insurance_start": latest_ins.get("insurance_start").date() if latest_ins.get("insurance_start") else "",
-            "insurance_end": end.date() if end else "",
-            "days_left": days_left,
-            "documents": d.get("documents", []),
-        })
+        items.append(
+            {
+                "id": str(d["_id"]),
+                "name": d.get("name"),
+                "phone": d.get("phone"),
+                "car_name": d.get("car_name"),
+                "plate_number": d.get("plate_number"),
+                "vin_number": d.get("vin_number"),
+                "insurance_start": (
+                    latest_ins.get("insurance_start").date()
+                    if latest_ins.get("insurance_start")
+                    else ""
+                ),
+                "insurance_end": end.date() if end else "",
+                "days_left": days_left,
+                "documents": d.get("documents", []),
+                "car_docs_ids": d.get("car_docs_ids", []),
+                "person_docs_ids": d.get("person_docs_ids", []),
+            }
+        )
 
-    return templates.TemplateResponse("index.html", {"request": request, "items": items, "today": datetime.utcnow().date()})
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "items": items,
+            "today": datetime.utcnow().date(),
+            "user": user,
+        },
+    )
 
 
 # ---------- ADD NEW RECORD ----------
+async def _store_upload(
+    bucket: AsyncIOMotorGridFSBucket,
+    upload: UploadFile,
+    first_name: str,
+    last_name: str,
+    label: str,
+    allowed_mimes: set[str],
+) -> dict:
+    if not upload or not upload.filename:
+        return {}
+    if not validate_mime(upload.content_type or "", allowed_mimes):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type for '{label}': {upload.content_type}",
+        )
+    content = await upload.read()
+    ext = pick_extension(upload.filename, upload.content_type or "")
+    renamed = build_filename(first_name, last_name, label, ext)
+    file_id = await bucket.upload_from_stream(
+        renamed,
+        content,
+        metadata={
+            "type": upload.content_type,
+            "original_filename": upload.filename,
+            "label": label,
+        },
+    )
+    return {
+        "file_id": file_id,
+        "filename": renamed,
+        "original_filename": upload.filename,
+        "content_type": upload.content_type,
+        "label": label,
+        "uploaded_at": datetime.utcnow(),
+    }
+
+
+def _split_full_name(name: str) -> tuple[str, str]:
+    parts = [p for p in name.strip().split() if p]
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    # Romanian convention in this app: surname first, given name(s) after.
+    return parts[0], " ".join(parts[1:])
+
+
 @app.post("/add")
 async def add_record(
+    request: Request,
     name: str = Form(...),
     phone: str = Form(...),
     car_name: str = Form(...),
@@ -75,7 +193,12 @@ async def add_record(
     vin_number: str = Form(...),
     insurance_start: str = Form(...),
     insurance_end: str = Form(...),
-    files: list[UploadFile] = File(None),
+    first_name: str = Form(""),
+    last_name: str = Form(""),
+    policy_file: UploadFile | None = File(None),
+    car_documents: list[UploadFile] | None = File(None),
+    person_documents: list[UploadFile] | None = File(None),
+    user: dict = Depends(require_user),
 ):
     validate_phone(phone)
     validate_plate(plate_number)
@@ -83,34 +206,62 @@ async def add_record(
 
     start_dt = datetime.strptime(insurance_start, "%Y-%m-%d")
     end_dt = datetime.strptime(insurance_end, "%Y-%m-%d")
+    if end_dt <= start_dt:
+        raise HTTPException(status_code=400, detail="Insurance end must be after start.")
 
-    bucket = app.state.fs_bucket
-    uploaded_docs = []
+    # If first/last were not posted explicitly, derive from the combined `name` field
+    # so renaming still produces meaningful filenames.
+    if not (first_name and last_name):
+        fallback_last, fallback_first = _split_full_name(name)
+        first_name = first_name or fallback_first
+        last_name = last_name or fallback_last
 
-    if files:
-        for f in files:
-            content = await f.read()
-            file_id = await bucket.upload_from_stream(f.filename, content, metadata={"type": f.content_type})
-            uploaded_docs.append({
-                "file_id": file_id,
-                "filename": f.filename,
-                "content_type": f.content_type,
-                "uploaded_at": datetime.utcnow()
-            })
+    bucket: AsyncIOMotorGridFSBucket = app.state.fs_bucket
+    policy_docs: list[dict] = []
+    car_docs_ids: list[dict] = []
+    person_docs_ids: list[dict] = []
+
+    if policy_file and policy_file.filename:
+        rec = await _store_upload(
+            bucket, policy_file, first_name, last_name, POLICY_LABEL, ALLOWED_POLICY_MIMES
+        )
+        if rec:
+            policy_docs.append(rec)
+
+    for f in car_documents or []:
+        rec = await _store_upload(
+            bucket, f, first_name, last_name, CAR_DOCS_LABEL, ALLOWED_DOC_MIMES
+        )
+        if rec:
+            car_docs_ids.append(rec)
+
+    for f in person_documents or []:
+        rec = await _store_upload(
+            bucket, f, first_name, last_name, PERSON_DOCS_LABEL, ALLOWED_DOC_MIMES
+        )
+        if rec:
+            person_docs_ids.append(rec)
 
     record = {
         "name": name.strip(),
+        "first_name": first_name.strip(),
+        "last_name": last_name.strip(),
         "phone": phone.strip(),
         "car_name": car_name.strip(),
         "plate_number": plate_number.strip(),
         "vin_number": vin_number.strip(),
-        "documents": uploaded_docs,
-        "insurances": [{
-            "insurance_start": start_dt,
-            "insurance_end": end_dt,
-            "created_at": datetime.utcnow()
-        }],
-        "created_at": datetime.utcnow()
+        "documents": policy_docs,
+        "car_docs_ids": car_docs_ids,
+        "person_docs_ids": person_docs_ids,
+        "insurances": [
+            {
+                "insurance_start": start_dt,
+                "insurance_end": end_dt,
+                "created_at": datetime.utcnow(),
+            }
+        ],
+        "created_at": datetime.utcnow(),
+        "created_by": user.get("email"),
     }
 
     await records_col.insert_one(record)
@@ -119,14 +270,22 @@ async def add_record(
 
 # ---------- DOWNLOAD FILE ----------
 @app.get("/download_file/{file_id}")
-async def download_file(file_id: str):
-    bucket = app.state.fs_bucket
-    buffer = BytesIO()
+async def download_file(file_id: str, user: dict = Depends(require_user)):
+    bucket: AsyncIOMotorGridFSBucket = app.state.fs_bucket
     try:
-        await bucket.download_to_stream(ObjectId(file_id), buffer)
-        buffer.seek(0)
-        return StreamingResponse(buffer, media_type="application/octet-stream",
-                                 headers={"Content-Disposition": f"attachment; filename=file_{file_id}.pdf"})
+        stream = await bucket.open_download_stream(ObjectId(file_id))
+        filename = getattr(stream, "filename", None) or f"file_{file_id}"
+        content_type = (
+            (stream.metadata or {}).get("type") if stream.metadata else None
+        ) or "application/octet-stream"
+        data = await stream.read()
+        return StreamingResponse(
+            BytesIO(data),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            },
+        )
     except Exception as e:
         print("File download error:", e)
         raise HTTPException(status_code=404, detail="File not found")
@@ -134,7 +293,10 @@ async def download_file(file_id: str):
 
 # ---------- EXPORT SELECTED TO CSV ----------
 @app.post("/export_selected_csv")
-async def export_selected_csv(selected_ids: str = Form(...)):
+async def export_selected_csv(
+    selected_ids: str = Form(...),
+    user: dict = Depends(require_user),
+):
     try:
         ids = [ObjectId(i) for i in selected_ids.split(",") if i.strip()]
         if not ids:
@@ -148,19 +310,29 @@ async def export_selected_csv(selected_ids: str = Form(...)):
         writer.writerow(["Name", "Phone", "Car", "Plate", "VIN", "Start", "End"])
         for d in data:
             ins = d.get("insurances", [{}])[-1]
-            writer.writerow([
-                d.get("name", ""),
-                d.get("phone", ""),
-                d.get("car_name", ""),
-                d.get("plate_number", ""),
-                d.get("vin_number", ""),
-                ins.get("insurance_start").strftime("%Y-%m-%d") if ins.get("insurance_start") else "",
-                ins.get("insurance_end").strftime("%Y-%m-%d") if ins.get("insurance_end") else "",
-            ])
+            writer.writerow(
+                [
+                    d.get("name", ""),
+                    d.get("phone", ""),
+                    d.get("car_name", ""),
+                    d.get("plate_number", ""),
+                    d.get("vin_number", ""),
+                    ins.get("insurance_start").strftime("%Y-%m-%d")
+                    if ins.get("insurance_start")
+                    else "",
+                    ins.get("insurance_end").strftime("%Y-%m-%d")
+                    if ins.get("insurance_end")
+                    else "",
+                ]
+            )
 
         out.seek(0)
-        headers = {"Content-Disposition": 'attachment; filename="selected_insurances.csv"'}
-        return StreamingResponse(iter([out.getvalue()]), media_type="text/csv", headers=headers)
+        headers = {
+            "Content-Disposition": 'attachment; filename="selected_insurances.csv"'
+        }
+        return StreamingResponse(
+            iter([out.getvalue()]), media_type="text/csv", headers=headers
+        )
 
     except Exception as e:
         print("CSV export error:", e)
@@ -169,7 +341,10 @@ async def export_selected_csv(selected_ids: str = Form(...)):
 
 # ---------- IMPORT PDF (auto-extract data) ----------
 @app.post("/import_pdf")
-async def import_pdf(file: UploadFile = File(...)):
+async def import_pdf(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_user),
+):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files allowed")
 
@@ -178,160 +353,53 @@ async def import_pdf(file: UploadFile = File(...)):
     if not data:
         raise HTTPException(status_code=400, detail="Could not extract data")
 
-    return JSONResponse({
-        "success": True,
-        "parsed_data": data,
-        "filename": file.filename
-    })
-
-
-def extract_insurance_data(pdf_bytes: bytes):
-    """
-    Robust extractor for: name, VIN, plate, start_date, end_date
-    Works across multiple Romanian policy layouts (multi-column, different labels).
-    """
-    import fitz, re
-    from datetime import datetime
-
-    # --- helpers -------------------------------------------------------------
-    def norm_ws(s: str) -> str:
-        return re.sub(r"\s+", " ", s).strip()
-
-    def to_iso(d: str) -> str:
-        for fmt in ("%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y"):
-            try:
-                return datetime.strptime(d, fmt).strftime("%Y-%m-%d")
-            except:  # noqa: E722
-                pass
-        return ""
-
-    def normalize_plate(p: str) -> str:
-        p = re.sub(r"[^A-Z0-9]", "", p.upper())
-        # Romanian formats: B 99 ABC or AA 99 ABC
-        # Try to re-space nicely
-        if len(p) in (7, 8):  # common lengths after removing spaces
-            # Heuristic: if starts with B (one-letter county)
-            if p.startswith("B"):
-                # B + 2/3 digits + 3 letters
-                m = re.match(r"^B(\d{2,3})([A-Z]{3})$", p)
-                if m:
-                    return f"B {m.group(1)} {m.group(2)}"
-            # two-letter county
-            m = re.match(r"^([A-Z]{2})(\d{2,3})([A-Z]{3})$", p)
-            if m:
-                return f"{m.group(1)} {m.group(2)} {m.group(3)}"
-        return p  # fallback
-
-    # --- read PDF as ordered blocks -----------------------------------------
-    try:
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            blocks_all = []
-            for page in doc:
-                blocks = page.get_text("blocks")  # (x0,y0,x1,y1,text, block_no, ...)
-                # sort by y then x to reconstruct reading order
-                blocks = sorted(blocks, key=lambda b: (round(b[1]), round(b[0])))
-                blocks_all.extend([norm_ws(b[4]) for b in blocks if b[4].strip()])
-            text = "\n".join(blocks_all)
-    except Exception as e:
-        print("PDF parse error:", e)
-        return {}
-
-    text_flat = norm_ws(text)
-    text_lc = text_flat.lower()
-
-    # --- search helpers (label proximity) ------------------------------------
-    def find_after(labels, max_chars=120):
-        """
-        Find the first occurrence of any label and return up to max_chars after it.
-        """
-        for lab in labels:
-            i = text_lc.find(lab.lower())
-            if i != -1:
-                seg = text_flat[i : i + len(lab) + max_chars]
-                return seg
-        return ""
-
-    # --- VIN (global, very reliable) -----------------------------------------
-    # VIN is 17 chars, excludes I,O,Q
-    vin = ""
-    vin_match = re.search(r"\b([A-HJ-NPR-Z0-9]{17})\b", text_flat)
-    if vin_match:
-        vin = vin_match.group(1)
-
-    # If not found, look near likely labels
-    if not vin:
-        near_vin = find_after(["VIN", "Serie șasiu", "Serie sasiu", "Serie CIV", "Serie"])
-        m = re.search(r"\b([A-HJ-NPR-Z0-9]{17})\b", near_vin)
-        vin = m.group(1) if m else ""
-
-    # --- Plate (global + normalized) -----------------------------------------
-    plate = ""
-    # AA 99 AAA or B 99 AAA (spaces optional in PDF)
-    plate_pat = r"\b((?:[A-Z]{2}\s?\d{2,3}\s?[A-Z]{3})|(?:B\s?\d{2,3}\s?[A-Z]{3}))\b"
-    m = re.search(plate_pat, text_flat)
-    if not m:
-        # look near labels
-        near_plate = find_after(
-            ["nr. înmatriculare", "nr inmatriculare", "număr înmatriculare",
-             "numar inmatriculare", "înregistrare", "inregistrare"], max_chars=80
-        )
-        m = re.search(plate_pat, near_plate)
-    if m:
-        plate = normalize_plate(m.group(1))
-
-    # --- Dates: prefer "de la ... / până la ..." context ---------------------
-    start, end = "", ""
-
-    # Capture within same small window
-    window = find_after(["valabilitate contract", "perioada de asigurare", "valabilitate"], max_chars=200)
-    m1 = re.search(r"de la\s*(\d{2}[./-]\d{2}[./-]\d{4})", window, flags=re.IGNORECASE)
-    m2 = re.search(r"p[aă]n[ăa]\s*la\s*(\d{2}[./-]\d{2}[./-]\d{4})", window, flags=re.IGNORECASE)
-    if m1:
-        start = to_iso(m1.group(1))
-    if m2:
-        end = to_iso(m2.group(1))
-
-    # Fallback: choose earliest as start, latest as end
-    if not start or not end:
-        all_dates = re.findall(r"(\d{2}[./-]\d{2}[./-]\d{4})", text_flat)
-        parsed = []
-        for d in all_dates:
-            iso = to_iso(d)
-            if iso:
-                parsed.append(datetime.strptime(iso, "%Y-%m-%d"))
-        parsed = sorted(set(parsed))
-        if parsed:
-            if not start:
-                start = parsed[0].strftime("%Y-%m-%d")
-            if not end and len(parsed) > 1:
-                # choose the farthest in future from start
-                end = parsed[-1].strftime("%Y-%m-%d")
-
-    # --- Name: search near common labels, prefer ALLCAPS tokens --------------
-    name = ""
-    near_name = find_after(
-        ["asigurat", "proprietar", "utilizator", "asigurat proprietar"], max_chars=120
+    return JSONResponse(
+        {
+            "success": True,
+            "parsed_data": data,
+            "filename": file.filename,
+        }
     )
-    # Strategy: pick 2–4 consecutive uppercase words (with diacritics allowed)
-    cap_word = r"[A-ZĂÂÎȘȚ][A-ZĂÂÎȘȚ\-']+"
-    m = re.search(rf"({cap_word}(?:\s+{cap_word}){{1,3}})", near_name)
-    if m:
-        name = m.group(1)
-    else:
-        # secondary: generic full name pattern anywhere
-        m2 = re.search(rf"\b({cap_word}\s+{cap_word}(?:\s+{cap_word})?)\b", text_flat)
-        if m2:
-            name = m2.group(1)
 
-    # Final cleanups
-    name = name.strip()
-    vin = vin.strip()
-    plate = plate.strip()
 
-    return {
-        "name": name,
-        "vin_number": vin,
-        "plate_number": plate,
-        "insurance_start": start,
-        "insurance_end": end,
-    }
+# ---------- ADMIN: trigger a test alert email (manual) ----------
+@app.post("/admin/test-email")
+@app.get("/admin/test-email")
+async def admin_test_email(user: dict = Depends(require_user)):
+    """Fires the expiration-alert email immediately so SendGrid wiring can be verified
+    without waiting for the 07:00 Europe/Bucharest cron tick."""
+    items = await _collect_expiring_items()
+    if not items:
+        # Send a synthetic item so the email channel itself can be verified.
+        items = [
+            {
+                "name": "TEST RECORD",
+                "car_name": "Test Vehicle",
+                "plate_number": "TEST 00 TST",
+                "insurance_end": (datetime.utcnow() + timedelta(days=3)).date(),
+                "days_left": 3,
+            }
+        ]
+    try:
+        send_email_alert(items)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"send failed: {e}")
+    return JSONResponse(
+        {
+            "success": True,
+            "sent_records": len(items),
+            "requested_by": user.get("email"),
+        }
+    )
+
+
+# ---------- ADMIN: internal-token endpoint for external schedulers ----------
+@app.post("/admin/run-expiration-check")
+async def admin_run_expiration_check(request: Request):
+    """Same job the cron runs, exposed so an external scheduler / webhook can call it.
+    Bypasses login via the X-Internal-Token shared-secret header configured in
+    INTERNAL_API_TOKEN; the auth middleware enforces that check before we get here."""
+    items = await _collect_expiring_items()
+    if items:
+        send_email_alert(items)
+    return {"success": True, "sent_records": len(items)}
