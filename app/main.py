@@ -125,9 +125,9 @@ async def home(request: Request, user: dict = Depends(require_user)):
         )
 
     return templates.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
+        request=request,
+        name="index.html",
+        context={
             "items": items,
             "today": datetime.utcnow().date(),
             "user": user,
